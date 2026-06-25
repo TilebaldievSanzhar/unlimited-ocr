@@ -1,0 +1,18 @@
+# IMPORTANT: install torch SEPARATELY first for Blackwell/sm_120 (RTX 5090):
+#   pip install --index-url https://download.pytorch.org/whl/cu129 torch
+# (setup.sh does this for you). Do NOT pin torch here — the cu129 wheel must come from the cu129 index.
+
+transformers==4.57.1
+tokenizers>=0.21
+safetensors>=0.4
+accelerate>=0.34
+einops>=0.8
+sentencepiece>=0.2
+
+pymupdf>=1.24
+pillow>=10.0
+numpy>=1.26
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

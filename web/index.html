@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Unlimited-OCR vs Marker</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#272c36; --fg:#e6e8ec; --muted:#9aa3b2; --accent:#5b9dff; --good:#3fb950; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; }
+  #health { color:var(--muted); font-size:12px; }
+  .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:14px 20px; border-bottom:1px solid var(--line); }
+  label { color:var(--muted); font-size:12px; display:flex; flex-direction:column; gap:4px; }
+  input, select, button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#06101f; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { padding:8px 20px; color:var(--muted); min-height:20px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); }
+  .pane { background:var(--bg); display:flex; flex-direction:column; min-width:0; }
+  .pane h2 { font-size:13px; margin:0; padding:10px 14px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; padding:8px 14px; border-bottom:1px solid var(--line); }
+  .badge { font-size:11px; background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:2px 9px; color:var(--muted); }
+  .badge b { color:var(--fg); }
+  .badge.hl b { color:var(--accent); }
+  .toggle { font-size:11px; }
+  .content { overflow:auto; padding:12px 14px; flex:1; max-height:calc(100vh - 230px); }
+  pre.raw { white-space:pre; font:12px/1.45 ui-monospace,Consolas,monospace; margin:0; }
+  .rendered table { border-collapse:collapse; }
+  .rendered th, .rendered td { border:1px solid var(--line); padding:3px 7px; }
+  .empty { color:var(--muted); font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Unlimited-OCR <span style="color:var(--muted)">vs</span> Marker</h1>
+  <span id="health">проверка GPU…</span>
+</header>
+
+<div class="controls">
+  <label>Документ (PDF / изображение)
+    <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff" />
+  </label>
+  <label>Режим
+    <select id="mode">
+      <option value="base">base (1024px, точный)</option>
+      <option value="gundam">gundam (640px, быстрый)</option>
+    </select>
+  </label>
+  <label>DPI рендера PDF
+    <input type="number" id="dpi" value="300" min="72" max="600" step="50" style="width:80px" />
+  </label>
+  <label>Marker .md (опционально)
+    <input type="file" id="markermd" accept=".md,.markdown,.txt" />
+  </label>
+  <button class="primary" id="run">Сравнить</button>
+</div>
+
+<div id="status"></div>
+
+<div class="cols">
+  <section class="pane">
+    <h2>Unlimited-OCR <label class="toggle"><input type="checkbox" class="render" data-for="u" /> рендер</label></h2>
+    <div class="badges" id="u-badges"></div>
+    <div class="content"><pre class="raw" id="u-raw"><span class="empty">нет данных</span></pre><div class="rendered" id="u-rendered" hidden></div></div>
+  </section>
+  <section class="pane">
+    <h2>Marker <label class="toggle"><input type="checkbox" class="render" data-for="m" /> рендер</label></h2>
+    <div class="badges" id="m-badges"></div>
+    <div class="content"><pre class="raw" id="m-raw"><span class="empty">нет данных</span></pre><div class="rendered" id="m-rendered" hidden></div></div>
+  </section>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const data = { u: "", m: "" };
+
+async function loadHealth() {
+  try {
+    const h = await (await fetch("/health")).json();
+    const g = h.gpu || {};
+    const mk = h.marker_available ? "marker: subprocess ON" : "marker: загружай .md";
+    $("health").textContent = g.name
+      ? `${g.name} — свободно ${g.free_gb}/${g.total_gb} ГБ · ${mk}`
+      : `GPU: ${JSON.stringify(h.gpu)} · ${mk}`;
+  } catch (e) { $("health").textContent = "health недоступен"; }
+}
+
+function badges(side, label, s, secs, other) {
+  const rowsCls = (other != null && s.max_table_rows < other) ? "" : "hl";
+  const hl = (a, b) => (b == null ? "" : a < b ? "" : a > b ? "hl" : "");
+  $(side + "-badges").innerHTML = [
+    secs != null ? `<span class="badge"><b>${secs}s</b></span>` : "",
+    `<span class="badge">таблиц <b>${s.num_tables}</b></span>`,
+    `<span class="badge ${hl(s.max_table_rows, other)}">макс строк/таблица <b>${s.max_table_rows}</b></span>`,
+    `<span class="badge">всего строк <b>${s.total_table_rows}</b></span>`,
+    `<span class="badge">заголовков <b>${s.headings}</b></span>`,
+    `<span class="badge">символов <b>${s.chars}</b></span>`,
+  ].join("");
+}
+
+function paint(side) {
+  const md = data[side] || "";
+  $(side + "-raw").textContent = md || "";
+  if (!md) $(side + "-raw").innerHTML = '<span class="empty">нет данных</span>';
+  const rendered = $(side + "-rendered");
+  if (window.marked) rendered.innerHTML = marked.parse(md);
+}
+
+document.querySelectorAll(".render").forEach((cb) => {
+  cb.addEventListener("change", () => {
+    const side = cb.dataset.for;
+    $(side + "-raw").hidden = cb.checked;
+    $(side + "-rendered").hidden = !cb.checked;
+  });
+});
+
+$("run").addEventListener("click", async () => {
+  const f = $("file").files[0];
+  if (!f) { $("status").textContent = "Выбери документ."; return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("mode", $("mode").value);
+  fd.append("dpi", $("dpi").value);
+  const mk = $("markermd").files[0];
+  if (mk) fd.append("marker_md", mk);
+
+  $("run").disabled = true;
+  $("status").textContent = "Обработка… (первый запрос грузит модель — может занять минуту)";
+  const t = performance.now();
+  try {
+    const r = await fetch("/api/compare", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    const res = await r.json();
+    data.u = res.unlimited.markdown;
+    data.m = res.marker.markdown;
+    badges("u", "Unlimited", res.unlimited.stats, res.unlimited.seconds, res.marker.stats.max_table_rows);
+    badges("m", "Marker", res.marker.stats, res.marker.seconds, res.unlimited.stats.max_table_rows);
+    paint("u"); paint("m");
+    const dt = ((performance.now() - t) / 1000).toFixed(1);
+    $("status").textContent = `Готово за ${dt}s · marker: ${res.marker.source} · сохранено в ${res.run_dir}`;
+  } catch (e) {
+    $("status").textContent = "Ошибка: " + e.message;
+  } finally {
+    $("run").disabled = false;
+  }
+});
+
+loadHealth();
+</script>
+</body>
+</html>
