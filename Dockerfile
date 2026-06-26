@@ -4,20 +4,25 @@ FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     APP_PORT=7700 \
-    HF_HOME=/hf-cache
+    HF_HOME=/hf-cache \
+    PATH="/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv python3-pip \
+        python3.12 python3.12-venv \
     && rm -rf /var/lib/apt/lists/*
+
+# Use an isolated venv: Ubuntu 24.04's system pip is Debian-managed (PEP 668),
+# upgrading it in place fails ("Cannot uninstall pip ... RECORD file not found").
+RUN python3.12 -m venv /opt/venv \
+    && pip install --upgrade pip wheel
 
 WORKDIR /app
 
 # torch from the cu129 index first, then the rest (better layer caching).
-RUN pip install --break-system-packages --upgrade pip wheel \
-    && pip install --break-system-packages --index-url https://download.pytorch.org/whl/cu129 torch
+RUN pip install --index-url https://download.pytorch.org/whl/cu129 torch
 
 COPY requirements.txt .
-RUN pip install --break-system-packages -r requirements.txt
+RUN pip install -r requirements.txt
 
 COPY . .
 
