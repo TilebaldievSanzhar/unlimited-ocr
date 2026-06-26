@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# local docker overrides (port, marker cmd, ...)
+.env
+
 # run artifacts
 data/outputs/*
 !data/outputs/.gitkeep
