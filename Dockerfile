@@ -27,6 +27,15 @@ RUN pip install --index-url https://download.pytorch.org/whl/cu129 torchvision
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# flash-attn enables the model's memory-efficient attention (DeepseekV2FlashAttention2),
+# avoiding the O(n^2) eager attention matrix that OOMs on long multi-page docs.
+# Likely a source build on Blackwell (sm_120): limit the arch to cut build time/RAM,
+# and cap MAX_JOBS so the compile doesn't exhaust host RAM. This step is SLOW.
+ENV MAX_JOBS=4 \
+    TORCH_CUDA_ARCH_LIST="12.0+PTX"
+RUN pip install ninja packaging psutil \
+    && pip install flash-attn --no-build-isolation
+
 COPY . .
 
 EXPOSE 7700

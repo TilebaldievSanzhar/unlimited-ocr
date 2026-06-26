@@ -52,7 +52,19 @@ def load_model():
         if attn:
             kwargs["attn_implementation"] = attn
             log.info("Using attn_implementation=%s", attn)
-        model = AutoModel.from_pretrained(name, **kwargs)
+        try:
+            model = AutoModel.from_pretrained(name, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            if "attn_implementation" in kwargs:
+                log.warning(
+                    "Load with attn_implementation=%s failed (%s). Falling back to default "
+                    "attention -- long multi-page docs will likely OOM.",
+                    kwargs["attn_implementation"], e,
+                )
+                kwargs.pop("attn_implementation")
+                model = AutoModel.from_pretrained(name, **kwargs)
+            else:
+                raise
         _model = model.eval().cuda()
         log.info("Model loaded.")
 
