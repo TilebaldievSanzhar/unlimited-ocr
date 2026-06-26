@@ -40,12 +40,19 @@ def load_model():
         name = os.environ.get("UNLIMITED_OCR_MODEL", "baidu/Unlimited-OCR")
         log.info("Loading %s ...", name)
         _tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
-        model = AutoModel.from_pretrained(
-            name,
+        kwargs = dict(
             trust_remote_code=True,
             use_safetensors=True,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,  # `torch_dtype` is deprecated in transformers 4.57
         )
+        # Optional efficient attention. The HF path defaults to full (eager) attention,
+        # which is O(n^2) memory on long multi-page inputs. Set UOCR_ATTN=flash_attention_2
+        # (needs flash-attn installed) to use the model's memory-efficient sliding-window path.
+        attn = os.environ.get("UOCR_ATTN")
+        if attn:
+            kwargs["attn_implementation"] = attn
+            log.info("Using attn_implementation=%s", attn)
+        model = AutoModel.from_pretrained(name, **kwargs)
         _model = model.eval().cuda()
         log.info("Model loaded.")
 
@@ -83,46 +90,64 @@ def _read_markdown(output_path) -> str | None:
 
 
 def run(image_paths, mode: str = "base", output_path=None, max_length: int = 32768) -> dict:
+    import torch
+
     load_model()
     output_path = str(output_path or "/tmp/uocr_out")
     Path(output_path).mkdir(parents=True, exist_ok=True)
     image_paths = [str(p) for p in image_paths]
 
+    # Optional page cap to bound memory while testing on a shared GPU (0 = all pages).
+    max_pages = int(os.environ.get("UOCR_MAX_PAGES", "0") or 0)
+    if max_pages and len(image_paths) > max_pages:
+        log.warning("Capping %d pages -> UOCR_MAX_PAGES=%d", len(image_paths), max_pages)
+        image_paths = image_paths[:max_pages]
+
     cfg = MODE_CFG.get(mode, MODE_CFG["base"])
     t0 = time.time()
     with _infer_lock:
-        if len(image_paths) == 1:
-            ret = _safe_call(
-                _model.infer,
-                tokenizer=_tokenizer,
-                prompt="<image>document parsing.",
-                image_file=image_paths[0],
-                output_path=output_path,
-                base_size=cfg["base_size"],
-                image_size=cfg["image_size"],
-                crop_mode=cfg["crop_mode"],
-                max_length=max_length,
-                no_repeat_ngram_size=35,
-                ngram_window=128,
-                save_results=True,
-            )
-        else:
-            # Multi-page is base mode only.
-            ret = _safe_call(
-                _model.infer_multi,
-                tokenizer=_tokenizer,
-                prompt="<image>Multi page parsing.",
-                image_files=image_paths,
-                output_path=output_path,
-                image_size=1024,
-                max_length=max_length,
-                no_repeat_ngram_size=35,
-                ngram_window=1024,
-                save_results=True,
-            )
+        try:
+            if len(image_paths) == 1:
+                ret = _safe_call(
+                    _model.infer,
+                    tokenizer=_tokenizer,
+                    prompt="<image>document parsing.",
+                    image_file=image_paths[0],
+                    output_path=output_path,
+                    base_size=cfg["base_size"],
+                    image_size=cfg["image_size"],
+                    crop_mode=cfg["crop_mode"],
+                    max_length=max_length,
+                    no_repeat_ngram_size=35,
+                    ngram_window=128,
+                    save_results=True,
+                )
+            else:
+                # Multi-page: infer_multi takes only image_size (default 640). Honor the
+                # selected mode's resolution so `gundam` (640) can cut memory vs `base` (1024).
+                ret = _safe_call(
+                    _model.infer_multi,
+                    tokenizer=_tokenizer,
+                    prompt="<image>Multi page parsing.",
+                    image_files=image_paths,
+                    output_path=output_path,
+                    image_size=cfg["image_size"],
+                    max_length=max_length,
+                    no_repeat_ngram_size=35,
+                    ngram_window=1024,
+                    save_results=True,
+                )
+        finally:
+            # Release cached blocks so a failed/large run doesn't starve the next one.
+            torch.cuda.empty_cache()
     seconds = round(time.time() - t0, 2)
 
-    markdown = ret if isinstance(ret, str) and ret.strip() else None
+    # infer() returns a str; infer_multi() returns a (markdown, token_count) tuple.
+    markdown = None
+    if isinstance(ret, tuple) and ret and isinstance(ret[0], str):
+        markdown = ret[0]
+    elif isinstance(ret, str) and ret.strip():
+        markdown = ret
     if not markdown:
         markdown = _read_markdown(output_path)
 
@@ -130,6 +155,6 @@ def run(image_paths, mode: str = "base", output_path=None, max_length: int = 327
         "markdown": markdown or "",
         "seconds": seconds,
         "pages": len(image_paths),
-        "mode": "base" if len(image_paths) > 1 else mode,
+        "mode": mode,
         "raw_return_type": type(ret).__name__,
     }

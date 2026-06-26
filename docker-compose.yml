@@ -21,6 +21,12 @@ services:
     environment:
       APP_PORT: "${APP_PORT:-7700}"
       HF_HOME: /hf-cache
+      # Reduce CUDA fragmentation on a shared GPU.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      # Cap pages per request to bound memory while testing (0 = all pages).
+      UOCR_MAX_PAGES: "${UOCR_MAX_PAGES:-0}"
+      # Efficient attention for long docs (needs flash-attn in the image):
+      # UOCR_ATTN: flash_attention_2
       # Optional: run marker in-process via subprocess (will share the GPU VRAM):
       # MARKER_CMD: "marker_single {input} --output_dir {output}"
     volumes:
