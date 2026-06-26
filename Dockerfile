@@ -20,6 +20,9 @@ WORKDIR /app
 
 # torch from the cu129 index first, then the rest (better layer caching).
 RUN pip install --index-url https://download.pytorch.org/whl/cu129 torch
+# torchvision is required by the model's remote code; pull it from the SAME cu129
+# index so it matches torch and supports Blackwell (separate layer keeps torch cached).
+RUN pip install --index-url https://download.pytorch.org/whl/cu129 torchvision
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt

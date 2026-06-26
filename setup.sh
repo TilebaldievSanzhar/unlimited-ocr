@@ -10,7 +10,7 @@ pip install --upgrade pip wheel
 
 # Blackwell (RTX 5090 / sm_120) needs the cu129 build of torch.
 # Older/default wheels fail at runtime with "no kernel image is available for sm_120".
-pip install --index-url https://download.pytorch.org/whl/cu129 torch
+pip install --index-url https://download.pytorch.org/whl/cu129 torch torchvision
 
 pip install -r requirements.txt
 

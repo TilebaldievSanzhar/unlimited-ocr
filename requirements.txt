@@ -9,6 +9,11 @@ accelerate>=0.34
 einops>=0.8
 sentencepiece>=0.2
 
+# required by the baidu/Unlimited-OCR remote modeling code
+# (torchvision is installed from the cu129 index in the Dockerfile / setup.sh)
+addict>=2.4
+matplotlib>=3.8
+
 pymupdf>=1.24
 pillow>=10.0
 numpy>=1.26
