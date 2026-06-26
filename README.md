@@ -5,93 +5,112 @@
 
 Сравнивается **только сырой OCR → markdown**. Этап классификации/экстракции здесь намеренно не трогаем.
 
-## Что внутри
+## Порты (общий сервер)
 
-- `app/` — FastAPI сервис: веб-UI + REST API.
-  - `engines/unlimited.py` — обёртка Unlimited-OCR (HF Transformers, `model.infer` / `model.infer_multi`).
-  - `engines/marker.py` — опциональный запуск marker подпроцессом.
-  - `pdf_utils.py` — PDF → PNG страницы (PyMuPDF, 300 DPI).
-  - `metrics.py` — статистика по markdown-таблицам (число таблиц, строк, line items).
-- `web/index.html` — ручное тестирование side-by-side.
-- `scripts/compare_cli.py` — headless-прогон по SSH без веба.
-- `scripts/serve_sglang.sh` — альтернативная подача через SGLang (OpenAI-совместимый API), для прода.
-- `setup.sh` — установка окружения (важно: torch для Blackwell/sm_120).
+Сервис слушает порт из выделенного диапазона **7700–7799**:
+
+| Сервис | Порт по умолчанию |
+|---|---|
+| Веб + REST API (этот стенд) | **7700** |
+| SGLang (опционально, прод-подача) | **7701** |
+
+Поменять порт стенда — переменной `APP_PORT` (оставайся в 7700–7799).
 
 ## Требования
 
-- Linux + NVIDIA GPU. На RTX 5090 (Blackwell, sm_120) **обязателен torch cu129** — иначе `no kernel image for sm_120`.
-- Память: модель ~7.3 GB в bf16 + активации. На 5090 с ~20 GB свободными — с запасом. Квантизация не нужна.
-- Python 3.12.
+- Linux + NVIDIA GPU + **NVIDIA Container Toolkit** (`nvidia-ctk`) для проброса GPU в Docker.
+- Blackwell (RTX 5090, sm_120): образ собран на CUDA 12.9 + torch cu129 — иначе `no kernel image for sm_120`.
+- Память: модель ~7.3 GB в bf16 + активации. На 5090 с ~20 GB свободными — с запасом, квантизация не нужна.
 
-## Установка
-
-```bash
-git clone <your-remote> unlimited-ocr-bench
-cd unlimited-ocr-bench
-bash setup.sh
-```
-
-`setup.sh` ставит torch с индекса cu129 и остальные зависимости. Первый запуск скачает веса
-`baidu/Unlimited-OCR` (несколько ГБ) в кэш HuggingFace.
-
-> Если в `app/engines/unlimited.py` remote-код модели потребует `flash-attn`, поставь его отдельно:
-> `pip install flash-attn --no-build-isolation` (сборка под Blackwell может занять время).
-
-## Запуск веба
+## Запуск через Docker (основной путь)
 
 ```bash
-source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+git clone https://github.com/TilebaldievSanzhar/unlimited-ocr.git
+cd unlimited-ocr
+
+docker compose up -d --build      # собрать и поднять
+docker compose logs -f            # следить (первый запуск качает веса ~ГБ)
 ```
 
-Открой `http://<server>:8000/`. Загрузи PDF инвойса, выбери режим (`base` — точный, 1024px;
-`gundam` — быстрый, 640px), при желании подгрузи `.md` из текущего marker — увидишь две колонки
-с raw markdown и метриками. Ключевая метрика для инвойсов — **max строк в таблице** (≈ число позиций):
-если у marker она меньше, чем у Unlimited-OCR, значит он порезал/сломал таблицу.
+Открой `http://<server>:7700/`.
 
-## REST API
+Другой порт в своём диапазоне:
+
+```bash
+APP_PORT=7705 docker compose up -d --build
+```
+
+Остановить / пересобрать:
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+**Что куда монтируется:**
+- `./data` → выходы каждого прогона (`data/outputs/<timestamp>/` с `unlimited.md`, `marker.md`, страницами) видны на хосте.
+- именованный том `hf-cache` → веса модели кэшируются и не качаются заново при рестарте.
+
+> Если на твоей версии Docker GPU не подхватывается через `deploy.devices`, замени блок `deploy:`
+> в `docker-compose.yml` на `runtime: nvidia` (или запусти `docker run --gpus all ...`).
+> Проверь хост: `docker run --rm --gpus all nvidia/cuda:12.9.1-base-ubuntu24.04 nvidia-smi`.
+
+## Использование
+
+### Веб (ручное сравнение)
+
+Загрузи PDF инвойса → выбери режим (`base` — точный 1024px; `gundam` — быстрый 640px) →
+при желании подгрузи `.md` из текущего marker. Получишь две колонки с raw markdown и метриками.
+
+Ключевая метрика для инвойсов — **«макс строк/таблица» (≈ число позиций)**: если у marker меньше,
+чем у Unlimited-OCR — он порезал таблицу. `num_tables > 1` для одной таблицы позиций = структура разорвана.
+
+### REST API
 
 ```bash
 # только Unlimited-OCR
-curl -s -F file=@invoice.pdf -F mode=base http://localhost:8000/api/ocr | jq
+curl -s -F file=@invoice.pdf -F mode=base http://localhost:7700/api/ocr | jq
 
 # сравнение с готовым marker-выходом
 curl -s -F file=@invoice.pdf -F mode=base -F marker_md=@invoice.marker.md \
-  http://localhost:8000/api/compare | jq '{unlimited:.unlimited.stats, marker:.marker.stats}'
+  http://localhost:7700/api/compare | jq '{unlimited:.unlimited.stats, marker:.marker.stats}'
 ```
 
-Полные markdown-выходы каждого прогона сохраняются в `data/outputs/<timestamp>/`.
-
-## CLI (по SSH, без веба)
+### CLI внутри контейнера (по SSH, без веба)
 
 ```bash
-python -m scripts.compare_cli invoice.pdf --mode base --marker-md invoice.marker.md
+docker compose exec bench python -m scripts.compare_cli data/samples/invoice.pdf \
+    --mode base --marker-md data/samples/invoice.marker.md
 ```
+
+(положи тестовые файлы в `./data/samples/` на хосте — они видны внутри как `data/samples/`).
 
 ## Marker подпроцессом (опционально)
 
-По умолчанию marker в этом стенде НЕ запускается (чтобы не делить VRAM с Unlimited-OCR).
-Если хочешь запускать его прямо здесь:
+По умолчанию marker НЕ запускается (чтобы не делить VRAM с Unlimited-OCR) — сравнивай с готовым `.md`.
+Чтобы запускать marker прямо в контейнере, раскомментируй `MARKER_CMD` в `docker-compose.yml`
+(marker должен быть установлен в образе — добавь его в `requirements.txt`). `{input}`/`{output}` подставляются автоматически.
 
-```bash
-export MARKER_CMD="marker_single {input} --output_dir {output}"
-```
-
-`{input}` и `{output}` подставляются автоматически. Учти: marker догрузит свои модели на ту же GPU —
-следи за памятью.
-
-## SGLang (прод-альтернатива подачи)
+## SGLang (прод-альтернатива подачи, порт 7701)
 
 ```bash
 bash scripts/serve_sglang.sh
 ```
 
-Поднимает OpenAI-совместимый сервер. На занятой GPU **снизь `--mem-fraction-static`** (см. скрипт),
-иначе OOM при 12 GB уже занятой памяти.
+OpenAI-совместимый сервер. На занятой GPU `--mem-fraction-static` уже выставлен в `0.5` (~16 GB),
+иначе дефолтные 0.8 (~25.6 GB) + занятые 12 GB → OOM. Порт меняется через `SGLANG_PORT`.
+
+## Без Docker (альтернатива)
+
+```bash
+bash setup.sh
+source .venv/bin/activate
+APP_PORT=7700 uvicorn app.main:app --host 0.0.0.0 --port 7700
+```
 
 ## Заметка о достоверности
 
 Стенд написан против документированного API модели, но `model.infer` / `model.infer_multi`
 не прогонялись на этом железе. Обёртка читает markdown и из возвращаемого значения, и из
-`output_path` (на случай, если функция только пишет в файл) и логирует тип возврата — после
-первого прогона на сервере при необходимости подправь `app/engines/unlimited.py` под фактический формат.
+`output_path`, и логирует тип возврата (`raw_return_type`) — после первого прогона на сервере
+при необходимости подправь `app/engines/unlimited.py` под фактический формат.

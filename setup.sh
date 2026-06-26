@@ -17,4 +17,4 @@ pip install -r requirements.txt
 echo
 echo "Setup complete."
 echo "Run the web/API server with:"
-echo "  source .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+echo "  source .venv/bin/activate && APP_PORT=7700 uvicorn app.main:app --host 0.0.0.0 --port 7700"

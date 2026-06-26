@@ -1,0 +1,40 @@
+# Docker-first deployment.
+#   docker compose up -d --build        # start
+#   docker compose logs -f              # watch (first run downloads ~GBs of weights)
+#   docker compose down                 # stop
+#
+# Port: defaults to 7700 (inside the user's allocated range 7700-7799 on the shared
+# server). Change it by exporting APP_PORT before `up`, e.g. APP_PORT=7705.
+# Keep it within 7700-7799 to avoid collisions with other users.
+#
+# GPU requires the NVIDIA Container Toolkit on the host (nvidia-ctk). If the
+# `deploy.devices` block doesn't pick up the GPU on your Docker version, see the
+# `runtime: nvidia` alternative noted in the README.
+
+services:
+  bench:
+    build: .
+    image: unlimited-ocr-bench
+    container_name: unlimited-ocr-bench
+    ports:
+      - "${APP_PORT:-7700}:${APP_PORT:-7700}"
+    environment:
+      APP_PORT: "${APP_PORT:-7700}"
+      HF_HOME: /hf-cache
+      # Optional: run marker in-process via subprocess (will share the GPU VRAM):
+      # MARKER_CMD: "marker_single {input} --output_dir {output}"
+    volumes:
+      - ./data:/app/data          # outputs + uploads visible on the host
+      - hf-cache:/hf-cache        # persist model weights across restarts
+    shm_size: "2gb"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:
