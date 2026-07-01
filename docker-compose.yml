@@ -13,7 +13,14 @@
 
 services:
   bench:
-    build: .
+    build:
+      context: .
+      args:
+        # flash-attn is OFF by default (fast, portable build; eager is fine for invoices).
+        # Enable only for LONG docs, and MATCH the arch: 4090=8.9, 5090=12.0+PTX.
+        #   INSTALL_FLASH_ATTN=1 CUDA_ARCH=8.9 docker compose build
+        INSTALL_FLASH_ATTN: "${INSTALL_FLASH_ATTN:-0}"
+        CUDA_ARCH: "${CUDA_ARCH:-8.9;12.0+PTX}"
     image: unlimited-ocr-bench
     container_name: unlimited-ocr-bench
     ports:
@@ -25,9 +32,10 @@ services:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       # Cap pages per request to bound memory while testing (0 = all pages).
       UOCR_MAX_PAGES: "${UOCR_MAX_PAGES:-0}"
-      # Efficient attention for long docs (flash-attn is built into the image).
-      # Fallback if flash-attn misbehaves on this GPU: set UOCR_ATTN=eager (will OOM on long docs).
-      UOCR_ATTN: "${UOCR_ATTN:-flash_attention_2}"
+      # Attention impl. Empty = model default (eager) -- correct for the default image,
+      # which is built WITHOUT flash-attn. Set to flash_attention_2 ONLY if you rebuilt
+      # with --build-arg INSTALL_FLASH_ATTN=1 (else it loudly falls back to eager anyway).
+      UOCR_ATTN: "${UOCR_ATTN:-}"
       # Optional: run marker in-process via subprocess (will share the GPU VRAM):
       # MARKER_CMD: "marker_single {input} --output_dir {output}"
     volumes:
